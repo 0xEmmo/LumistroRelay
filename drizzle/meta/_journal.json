@@ -15,6 +15,13 @@
       "when": 1791385249807,
       "tag": "0001_curly_exiles",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "5",
+      "when": 1791414388078,
+      "tag": "0002_thankful_rhodey",
+      "breakpoints": true
     }
   ]
 }

@@ -1,7 +1,1 @@
-{
-  "routes": [
-    { "path": "/", "title": "Lumistro Relay" },
-    { "path": "/demo/foodician", "title": "Foodician Demo" },
-    { "path": "/workspace", "title": "Workspace" }
-  ]
-}
+{"routes":[{"path":"/","title":"Lumistro Relay"},{"path":"/workspace","title":"Your Workspace"}]}

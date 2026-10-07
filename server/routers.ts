@@ -1,38 +1,48 @@
+import { z } from "zod";
 import { COOKIE_NAME } from "@shared/const";
 import { getSessionCookieOptions } from "./_core/cookies";
 import { systemRouter } from "./_core/systemRouter";
-import { publicProcedure, router } from "./_core/trpc";
-import { protectedProcedure } from "./_core/trpc";
-import { getCurrentWorkspace, getPublicFoodicianBrand } from "./workspaces";
-import { z } from "zod";
+import { protectedProcedure, publicProcedure, router } from "./_core/trpc";
+import { addCatalogueItem, addFaq, brandSetupInput, catalogueItemInput, faqInput, getOwnerSetup, removeCatalogueItem, removeFaq, saveBrandSetup } from "./brandSetup";
+import { channelProvider, setSimulatedChannel } from "./channels";
+import { testReceptionist } from "./receptionist";
+import { getCurrentWorkspace } from "./workspaces";
 
 export const appRouter = router({
-    // if you need to use socket.io, read and register route in server/_core/index.ts, all api should start with '/api/' so that the gateway can route correctly
   system: systemRouter,
   auth: router({
     me: publicProcedure.query(opts => opts.ctx.user),
     logout: publicProcedure.mutation(({ ctx }) => {
       const cookieOptions = getSessionCookieOptions(ctx.req);
       ctx.res.clearCookie(COOKIE_NAME, { ...cookieOptions, maxAge: -1 });
-      return {
-        success: true,
-      } as const;
+      return { success: true } as const;
     }),
   }),
-
   workspace: router({
-    current: protectedProcedure
-      .input(z.object({ workspaceId: z.number().int().positive().optional() }).default({}))
-      .query(({ ctx, input }) => getCurrentWorkspace(ctx.user, input.workspaceId)),
-    foodicianDemo: publicProcedure.query(() => getPublicFoodicianBrand()),
+    current: protectedProcedure.query(({ ctx }) => getCurrentWorkspace(ctx.user)),
+    setup: protectedProcedure.query(({ ctx }) => getOwnerSetup(ctx.user)),
+    saveBrandSetup: protectedProcedure
+      .input(brandSetupInput)
+      .mutation(({ ctx, input }) => saveBrandSetup(ctx.user, input)),
+    addCatalogueItem: protectedProcedure
+      .input(catalogueItemInput)
+      .mutation(({ ctx, input }) => addCatalogueItem(ctx.user, input)),
+    removeCatalogueItem: protectedProcedure
+      .input(z.object({ id: z.number().int().positive() }))
+      .mutation(({ ctx, input }) => removeCatalogueItem(ctx.user, input.id)),
+    addFaq: protectedProcedure
+      .input(faqInput)
+      .mutation(({ ctx, input }) => addFaq(ctx.user, input)),
+    removeFaq: protectedProcedure
+      .input(z.object({ id: z.number().int().positive() }))
+      .mutation(({ ctx, input }) => removeFaq(ctx.user, input.id)),
+    setSimulatedChannel: protectedProcedure
+      .input(z.object({ provider: channelProvider, connected: z.boolean() }))
+      .mutation(({ ctx, input }) => setSimulatedChannel(ctx.user, input.provider, input.connected)),
+    testReceptionist: protectedProcedure
+      .input(z.object({ message: z.string().trim().min(1).max(3000) }))
+      .mutation(({ ctx, input }) => testReceptionist(ctx.user, input.message)),
   }),
-
-  // TODO: add feature routers here, e.g.
-  // todo: router({
-  //   list: protectedProcedure.query(({ ctx }) =>
-  //     db.getUserTodos(ctx.user.id)
-  //   ),
-  // }),
 });
 
 export type AppRouter = typeof appRouter;
