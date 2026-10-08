@@ -17,6 +17,7 @@ import { getCurrentWorkspace } from "./workspaces";
 export const brandSetupInput = z.object({
   name: z.string().trim().min(2).max(160),
   websiteUrl: z.string().trim().max(255).refine(value => isOptionalHttpUrl(value), "Enter a valid HTTP or HTTPS website URL."),
+  menuUrl: z.string().trim().max(500).refine(value => isOptionalHttpUrl(value), "Enter a valid HTTP or HTTPS menu URL."),
   industry: z.string().trim().min(2).max(100),
   description: z.string().trim().max(4000),
   locations: z.string().trim().max(3000),
@@ -136,6 +137,7 @@ export async function saveBrandSetup(user: User, input: BrandSetupInput) {
       brandId: savedBrandId,
       industry: input.industry,
       description: input.description,
+      menuUrl: input.menuUrl || null,
       locations: input.locations,
       openingHours: input.openingHours,
       contactDetails: input.contactDetails,
@@ -150,6 +152,7 @@ export async function saveBrandSetup(user: User, input: BrandSetupInput) {
       set: {
         industry: input.industry,
         description: input.description,
+        menuUrl: input.menuUrl || null,
         locations: input.locations,
         openingHours: input.openingHours,
         contactDetails: input.contactDetails,

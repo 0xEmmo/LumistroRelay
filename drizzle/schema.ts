@@ -90,6 +90,7 @@ export const brandProfiles = mysqlTable(
     paymentMethods: text("paymentMethods").notNull(),
     orderInstructions: text("orderInstructions").notNull(),
     policies: text("policies").notNull(),
+    menuUrl: varchar("menuUrl", { length: 500 }),
     voice: mysqlEnum("voice", ["friendly", "professional", "premium", "casual", "playful", "short_direct"]).default("friendly").notNull(),
     isApproved: boolean("isApproved").default(true).notNull(),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
@@ -187,7 +188,7 @@ export const aiRuns = mysqlTable(
     sourceRecords: text("sourceRecords").notNull(),
     promptVersion: varchar("promptVersion", { length: 80 }).notNull(),
     model: varchar("model", { length: 80 }).notNull(),
-    mode: mysqlEnum("mode", ["llm", "safety_rule", "fallback"]).default("llm").notNull(),
+    mode: mysqlEnum("mode", ["llm", "safety_rule", "fallback", "built_in"]).default("llm").notNull(),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
   },
   table => [

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { requiredFactHandoffReason, requiredHandoffReason, renderGroundedReply, safeAskDraft, sourceSupportsQuestion, type GroundingSource } from "./receptionist";
+import { attachmentsForSources, isGreetingOnly, isMenuRequest, requiredFactHandoffReason, requiredHandoffReason, renderGroundedReply, safeAskDraft, sourceSupportsQuestion, type GroundingSource } from "./receptionist";
 
 const emptyDetails = {
   openingHours: "", deliveryAreas: "", paymentMethods: "", orderInstructions: "",
@@ -37,6 +37,7 @@ describe("receptionist fact-boundary handoffs", () => {
     expect(requiredFactHandoffReason("What time?", emptyDetails, [])).toMatch(/ambiguous/i);
     expect(requiredFactHandoffReason("Do you deliver?", emptyDetails, [])).toMatch(/delivery or service-area/i);
     expect(requiredFactHandoffReason("Do you ship?", emptyDetails, [])).toMatch(/delivery or service-area/i);
+    expect(requiredFactHandoffReason("Which areas do you serve?", emptyDetails, [])).toMatch(/delivery or service-area/i);
   });
 
   it("hands off when delivery, order, location, or contact facts are missing", () => {
@@ -68,9 +69,67 @@ describe("receptionist fact-boundary handoffs", () => {
     expect(requiredFactHandoffReason("How much is Chick?", emptyDetails, products)).toMatch(/approved price/i);
   });
 
+  it("permits an exact approved FAQ to answer a missing profile field", () => {
+    const hoursFaq: GroundingSource = {
+      ref: "faq:3", kind: "faq", id: 3, label: "Hours", text: "We open weekdays at 9am and close at 5pm.",
+      value: { question: "What are your opening hours?", relatedPhrases: "when do you open, business hours" },
+    };
+    expect(requiredFactHandoffReason("What are your opening hours?", emptyDetails, [], [hoursFaq])).toBeNull();
+  });
+
   it("hands off for unsupported delivery estimates and payment details", () => {
     expect(requiredFactHandoffReason("How long does delivery take?", emptyDetails, [])).toMatch(/delivery-time/i);
     expect(requiredFactHandoffReason("Do you take card?", emptyDetails, [])).toMatch(/payment-method/i);
+  });
+});
+
+describe("greeting, menu, and owner-approved media", () => {
+  it("recognizes a plain greeting but not a greeting combined with an unsupported request", () => {
+    expect(isGreetingOnly("Hello")).toBe(true);
+    expect(isGreetingOnly("Hi there!")).toBe(true);
+    expect(isGreetingOnly("Hello, can I see your menu?")).toBe(false);
+  });
+
+  it("recognizes menu requests without treating arbitrary messages as a menu query", () => {
+    expect(isMenuRequest("Can I see your menu?" )).toBe(true);
+    expect(isMenuRequest("What products do you offer?" )).toBe(true);
+    expect(isMenuRequest("What time do you open?" )).toBe(false);
+  });
+
+  it("answers plain greetings with the saved brand name without invoking a factual answer", async () => {
+    const { builtInGreeting } = await import("./receptionist");
+    const result = builtInGreeting("Lumistro Bakehouse", "friendly", "profile:8:businessName");
+    expect(result).toMatchObject({ decision: "ANSWER", mode: "built_in", replyDraft: expect.stringContaining("Lumistro Bakehouse"), sourceRefs: ["profile:8:businessName"], attachments: [] });
+  });
+
+  it("answers menu requests with an owner-saved link or catalogue items and handoffs without them", async () => {
+    const { builtInMenuReply } = await import("./receptionist");
+    const product: GroundingSource = { ref: "product:9", kind: "product", id: 9, label: "Chicken Pasta", text: "{}", value: { name: "Chicken Pasta", category: "Main", description: "", price: "₦8,000", variants: "", availability: "available", imageUrl: "https://cdn.example.com/pasta.jpg" } };
+    const itemResult = builtInMenuReply("Lumistro Bakehouse", { id: 8, menuUrl: null }, [{ id: 9, name: "Chicken Pasta", price: "₦8,000" }], [product]);
+    expect(itemResult.decision).toBe("ANSWER");
+    expect(itemResult.replyDraft).toContain("Chicken Pasta — ₦8,000");
+    expect(itemResult.attachments).toContainEqual({ kind: "image", url: "https://cdn.example.com/pasta.jpg", label: "Chicken Pasta" });
+
+    const menuSource: GroundingSource = { ref: "profile:8:menuUrl", kind: "profile", id: 8, field: "menuUrl", label: "Menu link", text: "https://example.com/menu" };
+    const linkResult = builtInMenuReply("Lumistro Bakehouse", { id: 8, menuUrl: "https://example.com/menu" }, [], [menuSource]);
+    expect(linkResult.attachments).toContainEqual({ kind: "link", url: "https://example.com/menu", label: "Open menu" });
+
+    const emptyResult = builtInMenuReply("Lumistro Bakehouse", { id: 8, menuUrl: null }, [], []);
+    expect(emptyResult.decision).toBe("HANDOFF");
+    expect(emptyResult.attachments).toEqual([]);
+  });
+
+  it("attaches only credential-free HTTP(S) owner URLs and saved product image URLs", () => {
+    const menu: GroundingSource = { ref: "profile:2:menuUrl", kind: "profile", id: 2, field: "menuUrl", label: "Menu link", text: "https://example.com/menu" };
+    const product: GroundingSource = {
+      ref: "product:2", kind: "product", id: 2, label: "Pasta", text: "{}",
+      value: { name: "Pasta", category: "Main", description: "", price: "₦8,000", variants: "", availability: "available", imageUrl: "https://cdn.example.com/pasta.jpg" },
+    };
+    const unsafe: GroundingSource = { ref: "profile:2:websiteUrl", kind: "profile", id: 2, field: "websiteUrl", label: "Website", text: "javascript:alert(1)" };
+    expect(attachmentsForSources([menu, product, unsafe])).toEqual([
+      { kind: "link", url: "https://example.com/menu", label: "Open menu" },
+      { kind: "image", url: "https://cdn.example.com/pasta.jpg", label: "Pasta" },
+    ]);
   });
 });
 

@@ -8,7 +8,7 @@ import { getDb } from "./db";
 import { getCurrentWorkspace } from "./workspaces";
 
 export const RECEPTIONIST_MODEL = "gpt-5-mini";
-export const RECEPTIONIST_PROMPT_VERSION = "relay-grounded-test-v2";
+export const RECEPTIONIST_PROMPT_VERSION = "relay-grounded-test-v3";
 
 const leadDataSchema = z.object({
   name: z.string().max(160),
@@ -54,6 +54,17 @@ const modelResultSchema = z.object({
   sourceRefs: z.array(z.string().trim().min(1).max(180)).max(10),
 }).strict();
 
+export type ResponseAttachment = { kind: "link" | "image"; url: string; label: string };
+
+function isSafeHttpUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return (url.protocol === "http:" || url.protocol === "https:") && Boolean(url.hostname) && !url.username && !url.password;
+  } catch {
+    return false;
+  }
+}
+
 const resultSchema = z.object({
   decision: z.enum(["ANSWER", "ASK", "HANDOFF"]),
   replyDraft: z.string().max(2000),
@@ -63,10 +74,15 @@ const resultSchema = z.object({
   leadData: leadDataSchema,
   internalReason: z.string().max(1200),
   sourceRefs: z.array(z.string().min(1).max(180)).max(10),
+  attachments: z.array(z.object({
+    kind: z.enum(["link", "image"]),
+    url: z.string().trim().max(500).refine(isSafeHttpUrl, "Only safe HTTP or HTTPS attachments are permitted."),
+    label: z.string().trim().min(1).max(160),
+  }).strict()).max(8),
 }).strict();
 
 type ReceptionistResult = z.infer<typeof resultSchema> & {
-  mode: "llm" | "safety_rule" | "fallback";
+  mode: "llm" | "safety_rule" | "fallback" | "built_in";
   model: string;
 };
 
@@ -107,19 +123,30 @@ function includesExactPhrase(message: string, phrase: string): boolean {
 }
 
 /** Do not answer time-sensitive or missing business facts with a language-model guess. */
-export function requiredFactHandoffReason(message: string, details: ApprovedBusinessDetails, products: AvailabilityProduct[]): string | null {
+export function requiredFactHandoffReason(
+  message: string,
+  details: ApprovedBusinessDetails,
+  products: AvailabilityProduct[],
+  faqSources: GroundingSource[] = [],
+): string | null {
   const normalized = message.toLowerCase();
+  const relevantFaq = faqSources.filter(source => sourceSupportsQuestion(source, message));
+  const mentionedProducts = products.filter(product => includesExactPhrase(normalized, product.name));
+  const exactPriceFaq = relevantFaq.some(source =>
+    mentionedProducts.length === 0 || mentionedProducts.some(product =>
+      includesExactPhrase(`${source.value?.question ?? ""} ${source.value?.relatedPhrases ?? ""}`, product.name),
+    ),
+  );
   if (/\bwhat\s+time\b/.test(normalized) && !/\b(?:open|opening|close|closing|hours?|schedule)\b/.test(normalized)) return "The time request is ambiguous and needs a person to clarify what event or service it concerns.";
   if (/\b(?:booking|reservation|appointment|time slot|table)\b/.test(normalized) && /\b(?:available|availability|free|open|book|reserve|hold|have)\b/.test(normalized)) {
     return "Reservation and appointment availability is not live in this test; a person must confirm it.";
   }
-  if (/\b(?:how long|when).{0,35}\b(?:deliver|delivery|arrive)|\bdelivery\s+(?:time|estimate|window)\b/.test(normalized)) {
+  if (/\b(?:how long|when).{0,35}\b(?:deliver|delivery|arrive)|\bdelivery\s+(?:time|estimate|window)\b/.test(normalized) && relevantFaq.length === 0) {
     return "No approved delivery-time estimate is available; a person must confirm it.";
   }
 
-  const mentionedProducts = products.filter(product => includesExactPhrase(normalized, product.name));
   if (/\b(?:price|cost|pricing|fee|fees|charge|charges)\b|\bhow much\b/.test(normalized) &&
-    (mentionedProducts.length === 0 || mentionedProducts.some(product => !product.price?.trim()))) {
+    (mentionedProducts.length === 0 || mentionedProducts.some(product => !product.price?.trim())) && !exactPriceFaq) {
     return "An exact approved price or fee for the request is not available.";
   }
   const asksAvailability = /\b(?:available|availability|in stock|stock|do you have|does .{1,30} have|still have|currently have|any left|come in|sold out)\b/.test(normalized);
@@ -130,25 +157,25 @@ export function requiredFactHandoffReason(message: string, details: ApprovedBusi
     return "The requested item's current availability is not confirmed in the approved information.";
   }
   if (/\b(?:hours?|opening|open|close|closing|schedule)\b/.test(normalized) &&
-    /\b(?:what|when|are you|business|opening|hours?|close|open)\b/.test(normalized) && !details.openingHours.trim()) {
+    /\b(?:what|when|are you|business|opening|hours?|close|open)\b/.test(normalized) && !details.openingHours.trim() && relevantFaq.length === 0) {
     return "No approved opening hours are saved.";
   }
-  if (/\b(?:deliver(?:y|ies)?|ship(?:ping)?|courier|service area|service areas)\b/.test(normalized) && !details.deliveryAreas.trim()) {
+  if (/\b(?:deliver(?:y|ies)?|ship(?:ping)?|courier|service area|service areas|serve|serving|cover|coverage)\b/.test(normalized) && !details.deliveryAreas.trim() && relevantFaq.length === 0) {
     return "No approved delivery or service-area details are saved.";
   }
-  if (/\b(?:where are you|where is .*located|address|location|located|visit you)\b/.test(normalized) && !details.locations.trim()) {
+  if (/\b(?:where are you|where is .*located|address|location|located|visit you)\b/.test(normalized) && !details.locations.trim() && relevantFaq.length === 0) {
     return "No approved business location details are saved.";
   }
-  if (/\b(?:contact|phone|email|call|reach you|contact details|number)\b/.test(normalized) && !details.contactDetails.trim()) {
+  if (/\b(?:contact|phone|email|call|reach you|contact details|number)\b/.test(normalized) && !details.contactDetails.trim() && relevantFaq.length === 0) {
     return "No approved contact details are saved.";
   }
-  if (/\b(?:payment|payment methods?|how can i pay|how do i pay|can i pay|pay with|pay by|accept (?:cash|card|bank|transfer)|do you take)\b/.test(normalized) && !details.paymentMethods.trim()) {
+  if (/\b(?:payment|payment methods?|how can i pay|how do i pay|can i pay|pay with|pay by|accept (?:cash|card|bank|transfer)|do you take)\b/.test(normalized) && !details.paymentMethods.trim() && relevantFaq.length === 0) {
     return "No approved payment-method details are saved.";
   }
-  if (/\b(?:order|ordering|place an order|purchase|buy|book a service)\b/.test(normalized) && !details.orderInstructions.trim()) {
+  if (/\b(?:order|ordering|place an order|purchase|buy|book a service)\b/.test(normalized) && !details.orderInstructions.trim() && relevantFaq.length === 0) {
     return "No approved ordering or booking instructions are saved.";
   }
-  if (/\b(?:policy|policies|terms|cancellation|cancel|return|exchange)\b/.test(normalized) && !details.policies.trim()) {
+  if (/\b(?:policy|policies|terms|cancellation|cancel|return|exchange)\b/.test(normalized) && !details.policies.trim() && relevantFaq.length === 0) {
     return "No approved policy details are saved.";
   }
   return null;
@@ -163,10 +190,11 @@ export function sourceSupportsQuestion(source: GroundingSource, message: string)
       industry: /\b(?:industry|business type|type of business|kind of business|what does your business do|what do you do)\b/,
       description: /\b(?:tell me about your business|what do you offer|what services do you provide|what does your business do|what are you known for)\b/,
       websiteUrl: /\b(?:website|web site|website link|web address|online site)\b/,
+      menuUrl: /\b(?:menu|catalog(?:ue)?|product list|service list)\b/,
       locations: /\b(?:address|location|located|where are you|where is (?:the |your )?(?:business|shop|store|office)|where can i find you|visit (?:your )?(?:shop|store|office|location))\b/,
       openingHours: /\b(?:hours?|opening times?|business hours|open(?:ing)? time|closing time|when do you open|when do you close|are you open|are you closed|schedule)\b/,
       contactDetails: /\b(?:contact|phone|telephone|email|call|reach you|whatsapp)\b/,
-      deliveryAreas: /\b(?:deliver(?:y|ies)?|ship(?:ping)?|courier|service area|service areas)\b/,
+      deliveryAreas: /\b(?:deliver(?:y|ies)?|ship(?:ping)?|courier|service area|service areas|serve|serving|cover|coverage)\b/,
       paymentMethods: /\b(?:pay|payment|cash|card|transfer)\b/,
       orderInstructions: /\b(?:order|ordering|purchase|buy|book a service|place an order)\b/,
       policies: /\b(?:policy|policies|terms|cancel|cancellation|return|exchange)\b/,
@@ -219,6 +247,7 @@ export function renderGroundedReply(sources: GroundingSource[], voice: string): 
         industry: "Our business type is",
         description: "About our business:",
         websiteUrl: "Our website is",
+        menuUrl: "Our saved menu is",
         locations: "Our saved locations are",
         openingHours: "Our opening hours are",
         contactDetails: "Our saved contact details are",
@@ -284,8 +313,9 @@ function fallbackResult(mode: ReceptionistResult["mode"], reason: string): Recep
     leadData: { ...emptyLead },
     internalReason: reason,
     sourceRefs: [],
+    attachments: [],
     mode,
-    model: mode === "safety_rule" ? "relay-safety-rules-v1" : RECEPTIONIST_MODEL,
+    model: mode === "safety_rule" ? "relay-safety-rules-v1" : mode === "built_in" ? "relay-built-in-v1" : RECEPTIONIST_MODEL,
   };
 }
 
@@ -321,6 +351,7 @@ function makeGroundingSources(
   };
   addProfile("businessName", "Business name", brand.name);
   addProfile("websiteUrl", "Website", brand.websiteUrl ?? "");
+  addProfile("menuUrl", "Menu link", profile.menuUrl ?? "");
   addProfile("industry", "Business type", profile.industry);
   addProfile("description", "Business description", profile.description);
   addProfile("locations", "Locations", profile.locations);
@@ -339,8 +370,10 @@ function makeGroundingSources(
       price: item.price,
       variants: item.variants,
       availability: item.availability,
+      imageUrl: item.imageUrl,
     };
-    sources.push({ ref: `product:${item.id}`, kind: "product", id: item.id, label: item.name, text: JSON.stringify(value), value });
+    const factText = { name: item.name, category: item.category, description: item.description, price: item.price, variants: item.variants, availability: item.availability };
+    sources.push({ ref: `product:${item.id}`, kind: "product", id: item.id, label: item.name, text: JSON.stringify(factText), value });
   }
   for (const faq of faqs) {
     sources.push({
@@ -353,6 +386,84 @@ function makeGroundingSources(
     });
   }
   return sources;
+}
+
+export function isGreetingOnly(message: string): boolean {
+  const normalized = message.trim().toLowerCase().replace(/[.!?,]+/g, " ").replace(/\s+/g, " ").trim();
+  return /^(?:(?:hi|hello|hey|hiya)(?: there| team| everyone| how are you| how's it going| hope you are well| hope you're well)?|good (?:morning|afternoon|evening)(?: there| how are you| hope you are well| hope you're well)?)$/i.test(normalized);
+}
+
+export function isMenuRequest(message: string): boolean {
+  return /\b(?:menu|catalog(?:ue)?|product list|service list|show me (?:your )?(?:products|services)|what (?:products?|services?) do you (?:sell|offer|provide)|what do you (?:sell|offer)|what can i order)\b/i.test(message);
+}
+
+export function attachmentsForSources(sources: GroundingSource[]): ResponseAttachment[] {
+  const attachments = new Map<string, ResponseAttachment>();
+  const add = (kind: ResponseAttachment["kind"], url: string, label: string) => {
+    let safeUrl: string;
+    try {
+      const parsed = new URL(url);
+      if ((parsed.protocol !== "http:" && parsed.protocol !== "https:") || parsed.username || parsed.password) return;
+      safeUrl = parsed.toString();
+    } catch { return; }
+    if (attachments.size < 8) attachments.set(`${kind}:${safeUrl}`, { kind, url: safeUrl, label: label.slice(0, 160) });
+  };
+
+  for (const source of sources) {
+    if (source.kind === "profile" && (source.field === "menuUrl" || source.field === "websiteUrl")) {
+      add("link", source.text, source.field === "menuUrl" ? "Open menu" : "Visit website");
+    }
+    if (source.kind === "product" && source.value?.imageUrl) add("image", source.value.imageUrl, source.value.name ?? source.label);
+    if (source.kind === "faq") {
+      const links = source.text.match(/https?:\/\/[^\s<>"')\]]+/gi) ?? [];
+      for (const link of links) add("link", link.replace(/[),.!?;:]+$/, ""), "Open link");
+    }
+  }
+  return [...attachments.values()];
+}
+
+function instantAnswer(replyDraft: string, intent: string, sourceRefs: string[], attachments: ResponseAttachment[], internalReason: string): ReceptionistResult {
+  return {
+    decision: "ANSWER",
+    replyDraft,
+    confidence: 100,
+    intent,
+    missingInformation: [],
+    leadData: { ...emptyLead },
+    internalReason,
+    sourceRefs,
+    attachments,
+    mode: "built_in",
+    model: "relay-built-in-v1",
+  };
+}
+
+export function builtInGreeting(brandName: string, voice: string, businessNameRef: string): ReceptionistResult {
+  const reply = voice === "playful"
+    ? `Hey there! Thanks for reaching ${brandName}. What can we help you with?`
+    : voice === "professional" || voice === "premium" || voice === "short_direct"
+      ? `Hello, you’ve reached ${brandName}. How may we help you?`
+      : `Hi! Thanks for reaching ${brandName}. How can we help you today?`;
+  return instantAnswer(reply, "greeting", [businessNameRef], [], "Simple greeting answered with the owner-saved business name.");
+}
+
+export function builtInMenuReply(brandName: string, profile: Pick<BrandProfile, "id" | "menuUrl">, products: Array<Pick<typeof catalogueItems.$inferSelect, "id" | "name" | "price">>, sources: GroundingSource[]): ReceptionistResult {
+  const menuFaq = sources.find(source => source.kind === "faq" && /\b(?:menu|catalog(?:ue)?|product list|service list)\b/i.test(`${source.value?.question ?? ""} ${source.value?.relatedPhrases ?? ""}`));
+  const menuUrlRef = profile.menuUrl?.trim() ? `profile:${profile.id}:menuUrl` : null;
+  const productRefs = products.slice(0, 5).map(product => `product:${product.id}`);
+  const sourceRefs = [...new Set([...(menuUrlRef ? [menuUrlRef] : []), ...productRefs])];
+  const chosenSources = sourceRefs.map(ref => sources.find(source => source.ref === ref)).filter((source): source is GroundingSource => Boolean(source));
+
+  if (!menuUrlRef && products.length === 0 && menuFaq) {
+    return instantAnswer(menuFaq.text.trim().slice(0, 2000), "menu_request", [menuFaq.ref], attachmentsForSources([menuFaq]), "Exact owner-approved menu FAQ answer.");
+  }
+  if (!menuUrlRef && products.length === 0) {
+    return fallbackResult("safety_rule", "No approved menu link, catalogue item, or menu FAQ has been saved yet.");
+  }
+
+  const lines = [menuUrlRef ? "Here’s the menu. You can open the link below." : `Here are some items from ${brandName}’s saved menu:`];
+  for (const product of products.slice(0, 5)) lines.push(`${product.name}${product.price?.trim() ? ` — ${product.price.trim()}` : ""}`);
+  return instantAnswer(lines.join("\n"), "menu_request", sourceRefs, attachmentsForSources(chosenSources), "Menu response assembled only from owner-saved menu and catalogue records.");
 }
 
 function keepOnlyExplicitLeadData(leadData: z.infer<typeof leadDataSchema>, message: string) {
@@ -387,13 +498,18 @@ export async function testReceptionist(user: User, customerMessage: string): Pro
   const sourceRecords = makeGroundingSources(brand, profile, products, faqs);
   const sourceByRef = new Map(sourceRecords.map(source => [source.ref, source]));
   const approvedFacts = sourceRecords.map(({ ref, kind, label, text }) => ({ sourceRef: ref, kind, label, approvedContent: text }));
+  const faqSources = sourceRecords.filter(source => source.kind === "faq");
   const hasFacts = sourceRecords.length > 0;
 
   let result: ReceptionistResult;
   const hardHandoff = requiredHandoffReason(customerMessage);
-  const factHandoff = requiredFactHandoffReason(customerMessage, profile, products);
+  const factHandoff = requiredFactHandoffReason(customerMessage, profile, products, faqSources);
   if (hardHandoff) {
     result = fallbackResult("safety_rule", hardHandoff);
+  } else if (isGreetingOnly(customerMessage)) {
+    result = builtInGreeting(brand.name, profile.voice, `profile:${profile.id}:businessName`);
+  } else if (isMenuRequest(customerMessage)) {
+    result = builtInMenuReply(brand.name, profile, products, sourceRecords);
   } else if (factHandoff) {
     result = fallbackResult("safety_rule", factHandoff);
   } else if (!hasFacts) {
@@ -419,7 +535,7 @@ export async function testReceptionist(user: User, customerMessage: string): Pro
         ],
         response_format: {
           type: "json_schema",
-          json_schema: { name: "relay_receptionist_test_v2", strict: true, schema: modelOutputSchema },
+          json_schema: { name: "relay_receptionist_test_v3", strict: true, schema: modelOutputSchema },
         },
       });
       let content = await getTextCompletion(response.choices?.[0]?.message?.content);
@@ -443,7 +559,7 @@ export async function testReceptionist(user: User, customerMessage: string): Pro
         mode: "llm" as const,
         model: response.model || RECEPTIONIST_MODEL,
       };
-      const requiredHandoffAfterModel = requiredHandoffReason(customerMessage) ?? requiredFactHandoffReason(customerMessage, profile, products);
+      const requiredHandoffAfterModel = requiredHandoffReason(customerMessage) ?? requiredFactHandoffReason(customerMessage, profile, products, faqSources);
 
       if (requiredHandoffAfterModel) {
         result = fallbackResult("safety_rule", requiredHandoffAfterModel);
@@ -461,6 +577,7 @@ export async function testReceptionist(user: User, customerMessage: string): Pro
           missingInformation: ask.missingInformation,
           internalReason: "One safe, non-sensitive missing detail is needed before a draft can be answered.",
           sourceRefs: [],
+          attachments: [],
         } : fallbackResult("fallback", "A single safe missing detail could not be validated; the draft was withheld.");
       } else {
         const sourceRefs = [...new Set(parsed.sourceRefs)];
@@ -476,6 +593,7 @@ export async function testReceptionist(user: User, customerMessage: string): Pro
           missingInformation: [],
           internalReason: "Reply assembled from exact owner-approved source records; model-authored factual prose was not used.",
           sourceRefs,
+          attachments: attachmentsForSources(citedSources),
         } : fallbackResult("fallback", "No relevant, uniquely identified approved source supported the answer; it was withheld.");
       }
     } catch {
@@ -496,10 +614,13 @@ export async function testReceptionist(user: User, customerMessage: string): Pro
     missingInformation: JSON.stringify(result.missingInformation),
     leadData: JSON.stringify(result.leadData),
     internalReason: result.internalReason,
-    sourceRecords: JSON.stringify(selectedSources.map(({ ref, kind, id, field, label }) => ({ ref, kind, id, field, label }))),
+    sourceRecords: JSON.stringify({
+      sources: selectedSources.map(({ ref, kind, id, field, label }) => ({ ref, kind, id, field, label })),
+      attachments: result.attachments,
+    }),
     promptVersion: RECEPTIONIST_PROMPT_VERSION,
     model: result.model,
     mode: result.mode,
   });
-  return resultSchema.extend({ mode: z.enum(["llm", "safety_rule", "fallback"]), model: z.string() }).parse(result);
+  return resultSchema.extend({ mode: z.enum(["llm", "safety_rule", "fallback", "built_in"]), model: z.string() }).parse(result);
 }

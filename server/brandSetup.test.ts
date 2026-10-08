@@ -4,6 +4,7 @@ import { brandSetupInput, catalogueItemInput } from "./brandSetup";
 const setup = {
   name: "Example Brand",
   websiteUrl: "",
+  menuUrl: "",
   industry: "Retail",
   description: "",
   locations: "",
@@ -29,6 +30,7 @@ const product = {
 describe("owner URL inputs", () => {
   it("accepts empty optional fields and ordinary HTTP(S) URLs", () => {
     expect(brandSetupInput.safeParse({ ...setup, websiteUrl: "https://example.com" }).success).toBe(true);
+    expect(brandSetupInput.safeParse({ ...setup, menuUrl: "https://example.com/menu" }).success).toBe(true);
     expect(catalogueItemInput.safeParse({ ...product, imageUrl: "http://cdn.example.com/item.png" }).success).toBe(true);
     expect(brandSetupInput.safeParse(setup).success).toBe(true);
     expect(catalogueItemInput.safeParse(product).success).toBe(true);
@@ -38,6 +40,7 @@ describe("owner URL inputs", () => {
     "rejects unsafe or malformed URL %s",
     value => {
       expect(brandSetupInput.safeParse({ ...setup, websiteUrl: value }).success).toBe(false);
+      expect(brandSetupInput.safeParse({ ...setup, menuUrl: value }).success).toBe(false);
       expect(catalogueItemInput.safeParse({ ...product, imageUrl: value }).success).toBe(false);
     },
   );
