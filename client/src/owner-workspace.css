@@ -91,6 +91,9 @@
 .owner-record strong { overflow:hidden; color:#455249; font-size:10px; text-overflow:ellipsis; }
 .owner-record small { color:#899188; font-size:8px; line-height:1.5; }
 .owner-faq-record { align-items:flex-start; padding:12px 0; }
+.owner-faq-topic { width:min(100%,240px); margin-top:3px; }
+.owner-faq-topic > span { color:#879188; font-size:8px; }
+.owner-faq-topic .owner-input { min-height:31px; padding-block:6px; font-size:9px; }
 .owner-icon-button { border:0; border-radius:6px; padding:7px; display:grid; place-items:center; background:transparent; color:#9b766a; cursor:pointer; }
 .owner-icon-button:hover { background:#f8eeeb; color:#a74337; }
 .owner-muted { margin:12px 0; color:#90988f; font-size:9px; }

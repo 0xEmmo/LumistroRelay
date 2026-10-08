@@ -4,6 +4,7 @@ import { toast } from "sonner";
 import { trpc } from "@/lib/trpc";
 import type { inferRouterOutputs } from "@trpc/server";
 import type { AppRouter } from "../../../server/routers";
+import { faqIntentLabels, faqIntentValues, type FaqIntent } from "../../../shared/receptionist-intents";
 
 type SetupData = inferRouterOutputs<AppRouter>["workspace"]["setup"];
 type BrandForm = {
@@ -11,6 +12,8 @@ type BrandForm = {
   openingHours: string; contactDetails: string; deliveryAreas: string; paymentMethods: string;
   orderInstructions: string; policies: string; voice: "friendly" | "professional" | "premium" | "casual" | "playful" | "short_direct";
 };
+type FaqStarter = { question: string; intent: FaqIntent };
+type FaqDraft = { question: string; answer: string; relatedPhrases: string; intent: FaqIntent };
 const industries = ["Restaurant & food", "Fashion & apparel", "Beauty & wellness", "Events", "Real estate", "School & education", "Retail", "Professional services", "Other"];
 const days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 const paymentOptions = ["Cash", "Card", "Bank transfer", "POS", "Online payment", "Mobile money"];
@@ -48,27 +51,61 @@ function safePreviewUrl(value: string) {
     return (parsed.protocol === "https:" || parsed.protocol === "http:") && !parsed.username && !parsed.password;
   } catch { return false; }
 }
-function questionStarters(industry: string) {
+function questionStarters(industry: string): FaqStarter[] {
   const value = industry.toLowerCase();
-  if (/restaurant|food/.test(value)) return ["Can I see your menu?", "Which areas do you deliver to?", "How do I place an order?", "What payment methods do you accept?"];
-  if (/fashion|apparel|retail/.test(value)) return ["What products do you offer?", "How can I check sizes or options?", "How do I place an order?", "Which areas do you serve?"];
-  if (/beauty|wellness/.test(value)) return ["What services do you offer?", "How do I book a service?", "Where are you located?", "What should I know before my appointment?"];
-  if (/event/.test(value)) return ["What types of events do you support?", "How can I request a quote?", "What details should I include in an enquiry?"];
-  if (/real estate/.test(value)) return ["Which properties or services do you offer?", "How can I arrange a viewing?", "Where are your listings located?"];
-  if (/school|education/.test(value)) return ["How do I apply?", "What programmes do you offer?", "How can I contact admissions?"];
-  return ["What services do you offer?", "Where are you located?", "How can I contact you?", "How do I book or place an order?"];
-}
-function savedFactSuggestions(profile: NonNullable<SetupData["profile"]>) {
+  if (/restaurant|food/.test(value)) return [
+    { question: "Can I see your menu?", intent: "menu" },
+    { question: "Which areas do you deliver to?", intent: "delivery_area" },
+    { question: "What is the delivery fee?", intent: "delivery_fee" },
+    { question: "How do I place an order?", intent: "order_instructions" },
+    { question: "What payment methods do you accept?", intent: "payment_methods" },
+  ];
+  if (/fashion|apparel|retail/.test(value)) return [
+    { question: "What products do you offer?", intent: "product_details" },
+    { question: "How can I check sizes or options?", intent: "product_details" },
+    { question: "How do I place an order?", intent: "order_instructions" },
+    { question: "Which areas do you serve?", intent: "delivery_area" },
+  ];
+  if (/beauty|wellness/.test(value)) return [
+    { question: "What services do you offer?", intent: "product_details" },
+    { question: "How do I book a service?", intent: "booking_instructions" },
+    { question: "Where are you located?", intent: "location" },
+    { question: "What should I know before my appointment?", intent: "policy" },
+  ];
+  if (/event/.test(value)) return [
+    { question: "What types of events do you support?", intent: "business_information" },
+    { question: "How can I request a quote?", intent: "price" },
+    { question: "What details should I include in an enquiry?", intent: "booking_instructions" },
+  ];
+  if (/real estate/.test(value)) return [
+    { question: "Which properties or services do you offer?", intent: "product_details" },
+    { question: "How can I arrange a viewing?", intent: "booking_instructions" },
+    { question: "Where are your listings located?", intent: "location" },
+  ];
+  if (/school|education/.test(value)) return [
+    { question: "How do I apply?", intent: "booking_instructions" },
+    { question: "What programmes do you offer?", intent: "product_details" },
+    { question: "How can I contact admissions?", intent: "contact_details" },
+  ];
   return [
-    { question: "What are your opening hours?", answer: profile.openingHours, relatedPhrases: "business hours, opening times, when do you open" },
-    { question: "Which areas do you serve?", answer: profile.deliveryAreas, relatedPhrases: "delivery areas, service areas, do you deliver" },
-    { question: "Which payment methods do you accept?", answer: profile.paymentMethods, relatedPhrases: "how can I pay, payment options" },
-    { question: "How do I place an order?", answer: profile.orderInstructions, relatedPhrases: "ordering, purchase, booking instructions" },
-    { question: "Where are you located?", answer: profile.locations, relatedPhrases: "address, location, where can I find you" },
-    { question: "How can I contact you?", answer: profile.contactDetails, relatedPhrases: "phone, email, contact details" },
-    { question: "What policies should customers know?", answer: profile.policies, relatedPhrases: "cancellation, returns, terms" },
-    { question: "Can I see your menu?", answer: profile.menuUrl ? `You can view our menu here: ${profile.menuUrl}` : "", relatedPhrases: "menu link, catalogue" },
-  ].filter(item => item.answer.trim());
+    { question: "What services do you offer?", intent: "product_details" },
+    { question: "Where are you located?", intent: "location" },
+    { question: "How can I contact you?", intent: "contact_details" },
+    { question: "How do I book or place an order?", intent: "order_instructions" },
+  ];
+}
+function savedFactSuggestions(profile: NonNullable<SetupData["profile"]>): FaqDraft[] {
+  const suggestions: FaqDraft[] = [
+    { question: "What are your opening hours?", answer: profile.openingHours, relatedPhrases: "business hours, opening times, when do you open", intent: "opening_hours" },
+    { question: "Which areas do you serve?", answer: profile.deliveryAreas, relatedPhrases: "delivery areas, service areas, do you deliver", intent: "delivery_area" },
+    { question: "Which payment methods do you accept?", answer: profile.paymentMethods, relatedPhrases: "how can I pay, payment options", intent: "payment_methods" },
+    { question: "How do I place an order?", answer: profile.orderInstructions, relatedPhrases: "ordering, purchase, booking instructions", intent: "order_instructions" },
+    { question: "Where are you located?", answer: profile.locations, relatedPhrases: "address, location, where can I find you", intent: "location" },
+    { question: "How can I contact you?", answer: profile.contactDetails, relatedPhrases: "phone, email, contact details", intent: "contact_details" },
+    { question: "What policies should customers know?", answer: profile.policies, relatedPhrases: "cancellation, returns, terms", intent: "policy" },
+    { question: "Can I see your menu?", answer: profile.menuUrl ? `You can view our menu here: ${profile.menuUrl}` : "", relatedPhrases: "menu link, catalogue", intent: "menu" },
+  ];
+  return suggestions.filter(item => item.answer.trim());
 }
 
 export default function BrandSetupPanel({ data, onSaved }: { data: SetupData; onSaved?: () => void }) {
@@ -79,7 +116,7 @@ export default function BrandSetupPanel({ data, onSaved }: { data: SetupData; on
   const [openTime, setOpenTime] = useState("");
   const [closeTime, setCloseTime] = useState("");
   const [item, setItem] = useState({ name: "", category: "", description: "", price: "", variants: "", availability: "unknown" as "available" | "unavailable" | "unknown", imageUrl: "" });
-  const [faq, setFaq] = useState({ question: "", answer: "", relatedPhrases: "" });
+  const [faq, setFaq] = useState<FaqDraft>({ question: "", answer: "", relatedPhrases: "", intent: "faq" });
 
   useEffect(() => {
     if (!data.brand) {
@@ -129,7 +166,7 @@ export default function BrandSetupPanel({ data, onSaved }: { data: SetupData; on
   });
   const addFaq = trpc.workspace.addFaq.useMutation({
     onSuccess: async () => {
-      setFaq({ question: "", answer: "", relatedPhrases: "" });
+      setFaq({ question: "", answer: "", relatedPhrases: "", intent: "faq" });
       toast.success("FAQ added to your approved information.");
       await utils.workspace.setup.invalidate();
     },
@@ -138,6 +175,10 @@ export default function BrandSetupPanel({ data, onSaved }: { data: SetupData; on
   const removeFaq = trpc.workspace.removeFaq.useMutation({
     onSuccess: () => void utils.workspace.setup.invalidate(),
     onError: error => toast.error(error.message || "We couldn’t remove that FAQ."),
+  });
+  const updateFaqTopic = trpc.workspace.updateFaqIntent.useMutation({
+    onSuccess: () => void utils.workspace.setup.invalidate(),
+    onError: error => toast.error(error.message || "We couldn’t update that FAQ topic."),
   });
 
   const change = (key: keyof BrandForm, value: string) => setForm(previous => ({ ...previous, [key]: value }));
@@ -158,8 +199,8 @@ export default function BrandSetupPanel({ data, onSaved }: { data: SetupData; on
   };
   const submitItem = (event: FormEvent) => { event.preventDefault(); addItem.mutate(item); };
   const submitFaq = (event: FormEvent) => { event.preventDefault(); addFaq.mutate(faq); };
-  const loadStarterQuestion = (question: string) => setFaq(previous => ({ ...previous, question }));
-  const loadSavedFact = (suggestion: { question: string; answer: string; relatedPhrases: string }) => {
+  const loadStarterQuestion = (starter: FaqStarter) => setFaq(previous => ({ ...previous, question: starter.question, intent: starter.intent }));
+  const loadSavedFact = (suggestion: FaqDraft) => {
     setFaq(suggestion);
     toast.info("Review or edit this saved answer, then add it to your FAQs.");
   };
@@ -221,15 +262,16 @@ export default function BrandSetupPanel({ data, onSaved }: { data: SetupData; on
 
           <section className="owner-card owner-subcard">
             <div className="owner-card-heading"><div><p className="owner-eyebrow">APPROVED ANSWERS</p><h2>Frequently asked questions</h2><p>Choose a question starter or add an answer copied from facts you already saved. Review every answer before adding it.</p></div></div>
-            <div className="owner-faq-ideas"><span className="owner-helper-label">Question starters for {form.industry && form.industry !== "Other" ? form.industry : "your business"}</span><div className="owner-chip-grid">{questionStarters(form.industry).map(question => <button type="button" className="owner-text-chip" key={question} onClick={() => loadStarterQuestion(question)}>{question}</button>)}</div></div>
+            <div className="owner-faq-ideas"><span className="owner-helper-label">Question starters for {form.industry && form.industry !== "Other" ? form.industry : "your business"}</span><div className="owner-chip-grid">{questionStarters(form.industry).map(starter => <button type="button" className="owner-text-chip" key={starter.question} onClick={() => loadStarterQuestion(starter)}>{starter.question}</button>)}</div></div>
             {factSuggestions.length > 0 && <div className="owner-faq-ideas"><span className="owner-helper-label">Use an answer from your saved details</span><div className="owner-fact-suggestions">{factSuggestions.map(suggestion => <button type="button" className="owner-fact-suggestion" key={suggestion.question} onClick={() => loadSavedFact(suggestion)}><strong>{suggestion.question}</strong><small>{suggestion.answer}</small></button>)}</div></div>}
             <form onSubmit={submitFaq} className="owner-compact-form">
               <TextAreaField label="Customer question" value={faq.question} onChange={value => setFaq(previous => ({ ...previous, question: value }))} placeholder="Select a starter or write a question customers ask" rows={2} required />
+              <label className="owner-field"><span>What is this answer about?</span><select className="owner-input" value={faq.intent} onChange={event => setFaq(previous => ({ ...previous, intent: event.target.value as FaqIntent }))}>{faqIntentValues.map(intent => <option key={intent} value={intent}>{faqIntentLabels[intent]}</option>)}</select><small className="owner-helper">Relay uses this topic to match different customer wording without mixing unrelated answers.</small></label>
               <TextAreaField label="Approved answer" value={faq.answer} onChange={value => setFaq(previous => ({ ...previous, answer: value }))} placeholder="Write the answer your team approves" rows={3} required />
               <TextField label="Related phrases (optional)" value={faq.relatedPhrases} onChange={value => setFaq(previous => ({ ...previous, relatedPhrases: value }))} placeholder="Other ways customers might ask" />
               <button className="owner-small-button" type="submit" disabled={addFaq.isPending}><Plus size={15} /> Add FAQ</button>
             </form>
-            <div className="owner-record-list">{data.faqs.length === 0 ? <p className="owner-muted">No FAQs added yet.</p> : data.faqs.map(record => <article className="owner-record owner-faq-record" key={record.id}><div><strong>{record.question}</strong><small>{record.answer}</small></div><button type="button" className="owner-icon-button" aria-label={`Remove FAQ: ${record.question}`} onClick={() => removeFaq.mutate({ id: record.id })}><Trash2 size={15} /></button></article>)}</div>
+            <div className="owner-record-list">{data.faqs.length === 0 ? <p className="owner-muted">No FAQs added yet.</p> : data.faqs.map(record => <article className="owner-record owner-faq-record" key={record.id}><div><strong>{record.question}</strong><small>{record.answer}</small><label className="owner-field owner-faq-topic"><span>Answer topic</span><select className="owner-input" value={record.intent} disabled={updateFaqTopic.isPending} onChange={event => updateFaqTopic.mutate({ id: record.id, intent: event.target.value as FaqIntent })}>{faqIntentValues.map(intent => <option key={intent} value={intent}>{faqIntentLabels[intent]}</option>)}</select></label></div><button type="button" className="owner-icon-button" aria-label={`Remove FAQ: ${record.question}`} onClick={() => removeFaq.mutate({ id: record.id })}><Trash2 size={15} /></button></article>)}</div>
           </section>
         </div>
       )}

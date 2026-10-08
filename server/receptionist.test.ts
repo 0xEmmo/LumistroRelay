@@ -1,5 +1,19 @@
 import { describe, expect, it } from "vitest";
-import { attachmentsForSources, isGreetingOnly, isMenuRequest, requiredFactHandoffReason, requiredHandoffReason, renderGroundedReply, safeAskDraft, sourceSupportsQuestion, type GroundingSource } from "./receptionist";
+import {
+  attachmentsForSources,
+  builtInGreeting,
+  builtInMenuReply,
+  buildReceptionistSystemPrompt,
+  isGreetingOnly,
+  isMenuRequest,
+  requiredFactHandoffReason,
+  requiredHandoffReason,
+  renderGroundedReply,
+  safeAskDraft,
+  selectSourcesForIntent,
+  sourceSupportsIntent,
+  type GroundingSource,
+} from "./receptionist";
 
 const emptyDetails = {
   openingHours: "", deliveryAreas: "", paymentMethods: "", orderInstructions: "",
@@ -29,8 +43,23 @@ describe("receptionist mandatory handoffs", () => {
 });
 
 describe("receptionist fact-boundary handoffs", () => {
-  it.each(["What are your hours?", "Are you open tomorrow?"]) ("hands off for missing hours: %s", message => {
-    expect(requiredFactHandoffReason(message, emptyDetails, [])).toMatch(/opening hours/i);
+  it.each(["What are your hours?", "Are you open tomorrow?", "What time do you close?"]) (
+    "hands off when hours are absent: %s",
+    message => expect(requiredFactHandoffReason(message, emptyDetails, [])).toMatch(/opening hours/i),
+  );
+
+  it("lets paraphrased hours questions reach semantic source selection", () => {
+    const savedHours = { ...emptyDetails, openingHours: "Monday to Friday, 9am to 5pm" };
+    const hoursFaq: GroundingSource = {
+      ref: "faq:3", kind: "faq", id: 3, label: "Opening hours",
+      text: "We open weekdays at 9am and close at 5pm.",
+      value: { question: "What are your opening hours?", relatedPhrases: "business hours, opening times", intent: "opening_hours" },
+    };
+
+    expect(requiredFactHandoffReason("What time do you close?", savedHours, [])).toBeNull();
+    // The FAQ wording does not contain “close”; it must still be considered by the semantic matcher.
+    expect(requiredFactHandoffReason("What time do you close?", emptyDetails, [], [hoursFaq])).toBeNull();
+    expect(sourceSupportsIntent(hoursFaq, "opening_hours")).toBe(true);
   });
 
   it("hands off for ambiguous time questions and missing shipping/service-area facts", () => {
@@ -50,7 +79,7 @@ describe("receptionist fact-boundary handoffs", () => {
     expect(requiredFactHandoffReason("How much is Chicken Pasta?", emptyDetails, [
       { name: "Chicken Pasta", price: null, availability: "unknown" },
     ])).toMatch(/approved price/i);
-    expect(requiredFactHandoffReason("What is the delivery fee?", emptyDetails, [])).toMatch(/approved price/i);
+    expect(requiredFactHandoffReason("What is the delivery fee?", emptyDetails, [])).toMatch(/approved delivery or service fee/i);
     expect(requiredFactHandoffReason("Is the Blue Dress available?", emptyDetails, [
       { name: "Blue Dress", price: null, availability: "unknown" },
     ])).toMatch(/availability is not confirmed/i);
@@ -62,24 +91,78 @@ describe("receptionist fact-boundary handoffs", () => {
 
   it("matches mentioned products at word boundaries in price and availability checks", () => {
     const products = [
-      { name: "Chicken Pasta", price: "₦8,000", availability: "available" as const },
-      { name: "Chick", price: null, availability: "unknown" as const },
+      { id: 9, name: "Chicken Pasta", price: "₦8,000", availability: "available" as const },
+      { id: 10, name: "Chick", price: null, availability: "unknown" as const },
     ];
+    const chickenPasta: GroundingSource = {
+      ref: "product:9", kind: "product", id: 9, label: "Chicken Pasta", text: "{}",
+      value: { name: "Chicken Pasta", category: "Main", description: "", price: "₦8,000", variants: "", availability: "available" },
+    };
+    const chick: GroundingSource = {
+      ref: "product:10", kind: "product", id: 10, label: "Chick", text: "{}",
+      value: { name: "Chick", category: "Main", description: "", price: "", variants: "", availability: "unknown" },
+    };
     expect(requiredFactHandoffReason("How much is Chicken Pasta?", emptyDetails, products)).toBeNull();
-    expect(requiredFactHandoffReason("How much is Chick?", emptyDetails, products)).toMatch(/approved price/i);
+    expect(requiredFactHandoffReason("How much is Chicken Pasta?", emptyDetails, products, [], { intent: "price", sources: [chickenPasta] })).toBeNull();
+    expect(requiredFactHandoffReason("How much is Chick?", emptyDetails, products, [], { intent: "price", sources: [chick] })).toMatch(/approved price/i);
+    expect(requiredFactHandoffReason("How much is Chicken Pasta?", emptyDetails, products, [], { intent: "price", sources: [chick] })).toMatch(/approved price/i);
+    expect(requiredFactHandoffReason("Is Chicken Pasta available?", emptyDetails, products, [], { intent: "availability", sources: [chickenPasta] })).toBeNull();
+    expect(requiredFactHandoffReason("Is Chicken Pasta available?", emptyDetails, products, [], { intent: "availability", sources: [chick] })).toMatch(/availability is not confirmed/i);
+    expect(requiredFactHandoffReason("Tell me about Chicken Pasta", emptyDetails, products, [], { intent: "product_details", sources: [chickenPasta] })).toBeNull();
+    expect(requiredFactHandoffReason("Tell me about Chicken Pasta", emptyDetails, products, [], { intent: "product_details", sources: [chick] })).toMatch(/not uniquely identified/i);
   });
 
-  it("permits an exact approved FAQ to answer a missing profile field", () => {
-    const hoursFaq: GroundingSource = {
-      ref: "faq:3", kind: "faq", id: 3, label: "Hours", text: "We open weekdays at 9am and close at 5pm.",
-      value: { question: "What are your opening hours?", relatedPhrases: "when do you open, business hours" },
+  it("requires a delivery-fee FAQ rather than reusing an unrelated product price", () => {
+    const pricedPasta = { id: 9, name: "Chicken Pasta", price: "₦8,000", availability: "available" as const };
+    const feeFaq: GroundingSource = {
+      ref: "faq:22", kind: "faq", id: 22, label: "Delivery fee",
+      text: "Delivery to Lekki costs ₦1,500.",
+      value: { question: "What is the delivery fee?", relatedPhrases: "shipping cost, courier charge", intent: "delivery_fee" },
     };
-    expect(requiredFactHandoffReason("What are your opening hours?", emptyDetails, [], [hoursFaq])).toBeNull();
+    const productPriceFaq: GroundingSource = {
+      ref: "faq:23", kind: "faq", id: 23, label: "Pasta price",
+      text: "Chicken Pasta costs ₦8,000.",
+      value: { question: "How much is Chicken Pasta?", relatedPhrases: "Chicken Pasta price", intent: "price" },
+    };
+    const genericPriceFaq: GroundingSource = {
+      ref: "faq:25", kind: "faq", id: 25, label: "General pricing",
+      text: "Our current prices are listed in the approved catalogue.",
+      value: { question: "What are your prices?", relatedPhrases: "price list, pricing information", intent: "price" },
+    };
+
+    expect(requiredFactHandoffReason("What is the delivery fee?", emptyDetails, [pricedPasta], [productPriceFaq])).toMatch(/approved delivery or service fee/i);
+    expect(requiredFactHandoffReason("Is delivery free?", emptyDetails, [pricedPasta], [productPriceFaq])).toMatch(/approved delivery or service fee/i);
+    expect(requiredFactHandoffReason("What is the delivery fee?", emptyDetails, [pricedPasta], [feeFaq])).toBeNull();
+    expect(requiredFactHandoffReason("What is the delivery fee?", emptyDetails, [pricedPasta], [feeFaq], { intent: "delivery_fee", sources: [feeFaq] })).toBeNull();
+    expect(requiredFactHandoffReason("How much is Chicken Pasta?", emptyDetails, [pricedPasta], [productPriceFaq], { intent: "price", sources: [productPriceFaq] })).toBeNull();
+    expect(requiredFactHandoffReason("How much is Unknown Pie?", emptyDetails, [pricedPasta], [productPriceFaq], { intent: "price", sources: [productPriceFaq] })).toMatch(/approved price/i);
+    expect(requiredFactHandoffReason("What are your prices?", emptyDetails, [pricedPasta], [genericPriceFaq], { intent: "price", sources: [genericPriceFaq] })).toBeNull();
+    expect(requiredFactHandoffReason("How much is Unknown Pie?", emptyDetails, [pricedPasta], [genericPriceFaq], { intent: "price", sources: [genericPriceFaq] })).toMatch(/approved price/i);
+
+    const cleaningService = { id: 26, name: "Home cleaning service", price: "₦12,000", availability: "available" as const };
+    const cleaningSource: GroundingSource = {
+      ref: "product:26", kind: "product", id: 26, label: "Home cleaning service", text: "{}",
+      value: { name: "Home cleaning service", category: "Services", description: "", price: "₦12,000", variants: "", availability: "available" },
+    };
+    expect(requiredFactHandoffReason("How much is the home-cleaning service?", emptyDetails, [cleaningService], [], { intent: "price", sources: [cleaningSource] })).toBeNull();
+    expect(sourceSupportsIntent(feeFaq, "delivery_fee")).toBe(true);
+    expect(sourceSupportsIntent(feeFaq, "price")).toBe(false);
+    expect(sourceSupportsIntent(productPriceFaq, "delivery_fee")).toBe(false);
   });
 
   it("hands off for unsupported delivery estimates and payment details", () => {
     expect(requiredFactHandoffReason("How long does delivery take?", emptyDetails, [])).toMatch(/delivery-time/i);
     expect(requiredFactHandoffReason("Do you take card?", emptyDetails, [])).toMatch(/payment-method/i);
+  });
+
+  it("allows an approved delivery-time FAQ without requiring a separate service-area answer", () => {
+    const deliveryTimeFaq: GroundingSource = {
+      ref: "faq:24", kind: "faq", id: 24, label: "Delivery time",
+      text: "Delivery normally takes 45 minutes.",
+      value: { question: "How long does delivery take?", relatedPhrases: "arrival time, delivery estimate", intent: "delivery_time" },
+    };
+    expect(requiredFactHandoffReason("How long does delivery take?", emptyDetails, [], [deliveryTimeFaq])).toBeNull();
+    expect(requiredFactHandoffReason("How long does delivery take?", emptyDetails, [], [deliveryTimeFaq], { intent: "delivery_time", sources: [deliveryTimeFaq] })).toBeNull();
   });
 });
 
@@ -87,24 +170,32 @@ describe("greeting, menu, and owner-approved media", () => {
   it("recognizes a plain greeting but not a greeting combined with an unsupported request", () => {
     expect(isGreetingOnly("Hello")).toBe(true);
     expect(isGreetingOnly("Hi there!")).toBe(true);
+    expect(isGreetingOnly("Good morning, how are you?")).toBe(true);
     expect(isGreetingOnly("Hello, can I see your menu?")).toBe(false);
   });
 
   it("recognizes menu requests without treating arbitrary messages as a menu query", () => {
-    expect(isMenuRequest("Can I see your menu?" )).toBe(true);
-    expect(isMenuRequest("What products do you offer?" )).toBe(true);
-    expect(isMenuRequest("What time do you open?" )).toBe(false);
+    expect(isMenuRequest("Can I see your menu?")).toBe(true);
+    expect(isMenuRequest("What products do you offer?")).toBe(true);
+    expect(isMenuRequest("What time do you open?")).toBe(false);
   });
 
-  it("answers plain greetings with the saved brand name without invoking a factual answer", async () => {
-    const { builtInGreeting } = await import("./receptionist");
+  it("answers plain greetings with the saved brand name", () => {
     const result = builtInGreeting("Lumistro Bakehouse", "friendly", "profile:8:businessName");
-    expect(result).toMatchObject({ decision: "ANSWER", mode: "built_in", replyDraft: expect.stringContaining("Lumistro Bakehouse"), sourceRefs: ["profile:8:businessName"], attachments: [] });
+    expect(result).toMatchObject({
+      decision: "ANSWER",
+      mode: "built_in",
+      replyDraft: expect.stringContaining("Lumistro Bakehouse"),
+      sourceRefs: ["profile:8:businessName"],
+      attachments: [],
+    });
   });
 
-  it("answers menu requests with an owner-saved link or catalogue items and handoffs without them", async () => {
-    const { builtInMenuReply } = await import("./receptionist");
-    const product: GroundingSource = { ref: "product:9", kind: "product", id: 9, label: "Chicken Pasta", text: "{}", value: { name: "Chicken Pasta", category: "Main", description: "", price: "₦8,000", variants: "", availability: "available", imageUrl: "https://cdn.example.com/pasta.jpg" } };
+  it("answers menu requests with saved links or catalogue items and hands off without them", () => {
+    const product: GroundingSource = {
+      ref: "product:9", kind: "product", id: 9, label: "Chicken Pasta", text: "{}",
+      value: { name: "Chicken Pasta", category: "Main", description: "", price: "₦8,000", variants: "", availability: "available", imageUrl: "https://cdn.example.com/pasta.jpg" },
+    };
     const itemResult = builtInMenuReply("Lumistro Bakehouse", { id: 8, menuUrl: null }, [{ id: 9, name: "Chicken Pasta", price: "₦8,000" }], [product]);
     expect(itemResult.decision).toBe("ANSWER");
     expect(itemResult.replyDraft).toContain("Chicken Pasta — ₦8,000");
@@ -133,68 +224,80 @@ describe("greeting, menu, and owner-approved media", () => {
   });
 });
 
-describe("grounded answer construction and source relevance", () => {
+describe("grounded answer construction and semantic intent matching", () => {
   const faq: GroundingSource = {
     ref: "faq:8", kind: "faq", id: 8, label: "When are you open?",
     text: "We are open Monday to Friday, 9am to 5pm.",
-    value: { question: "When are you open?", relatedPhrases: "business hours, opening times" },
+    value: { question: "What are your opening hours?", relatedPhrases: "business hours, opening times", intent: "opening_hours" },
   };
-  const description: GroundingSource = {
-    ref: "profile:8:description", kind: "profile", id: 8, field: "description", label: "Business description",
-    text: "We make fresh pastries for local customers.",
+  const hours: GroundingSource = {
+    ref: "profile:8:openingHours", kind: "profile", id: 8, field: "openingHours", label: "Opening hours",
+    text: "Monday to Friday, 9am to 5pm",
   };
   const businessName: GroundingSource = {
-    ref: "profile:8:businessName", kind: "profile", id: 8, field: "businessName", label: "Business name",
-    text: "Lumistro Bakehouse",
-  };
-  const industry: GroundingSource = {
-    ref: "profile:8:industry", kind: "profile", id: 8, field: "industry", label: "Business type",
-    text: "Bakery",
+    ref: "profile:8:businessName", kind: "profile", id: 8, field: "businessName", label: "Business name", text: "Lumistro Bakehouse",
   };
   const locations: GroundingSource = {
-    ref: "profile:8:locations", kind: "profile", id: 8, field: "locations", label: "Locations",
-    text: "12 Adeola Street, Lagos.",
-  };
-  const hoursCandle: GroundingSource = {
-    ref: "product:8", kind: "product", id: 8, label: "Hours Candle", text: "{}",
-    value: { name: "Hours Candle", category: "Gift", description: "", price: "", variants: "", availability: "unknown" },
+    ref: "profile:8:locations", kind: "profile", id: 8, field: "locations", label: "Locations", text: "12 Adeola Street, Lagos.",
   };
   const chickenPasta: GroundingSource = {
     ref: "product:9", kind: "product", id: 9, label: "Chicken Pasta", text: "{}",
     value: { name: "Chicken Pasta", category: "Main", description: "", price: "₦8,000", variants: "", availability: "available" },
   };
-  const shortChickName: GroundingSource = {
+  const unpricedProduct: GroundingSource = {
     ref: "product:10", kind: "product", id: 10, label: "Chick", text: "{}",
     value: { name: "Chick", category: "Main", description: "", price: "", variants: "", availability: "unknown" },
   };
-  const offerName: GroundingSource = {
-    ref: "product:11", kind: "product", id: 11, label: "Offer", text: "{}",
-    value: { name: "Offer", category: "Gift", description: "", price: "", variants: "", availability: "unknown" },
-  };
 
-  it("renders the exact owner-approved FAQ answer and never accepts model-authored answer prose", () => {
-    expect(sourceSupportsQuestion(faq, "What are your hours?")).toBe(true);
+  it("tells the production model to match meaning instead of requiring suggested wording", () => {
+    const prompt = buildReceptionistSystemPrompt("Lumistro Bakehouse");
+    expect(prompt).toContain("synonyms, paraphrases, colloquial wording");
+    expect(prompt).toContain("Customers do not have to use a suggested/default question");
+    expect(prompt).toContain("What time do you close?");
+    expect(prompt).toContain("relatedPhrases as semantic hints");
+    expect(prompt).toContain("A general faq category is not evidence for a specific business-fact intent");
+    expect(prompt).toContain("A delivery or service fee is delivery_fee, never a catalogue product price");
+  });
+
+  it("renders exact saved FAQ/profile text, irrespective of the question's surface wording", () => {
+    expect(sourceSupportsIntent(faq, "opening_hours")).toBe(true);
+    expect(sourceSupportsIntent(hours, "opening_hours")).toBe(true);
     expect(renderGroundedReply([faq], "friendly")).toBe("We are open Monday to Friday, 9am to 5pm.");
+    expect(renderGroundedReply([hours], "friendly")).toContain("Monday to Friday, 9am to 5pm");
   });
 
-  it("rejects unrelated profile fields and generic catalogue questions", () => {
-    const addressQuestion = "What is your business address?";
-    expect(sourceSupportsQuestion(description, addressQuestion)).toBe(false);
-    expect(sourceSupportsQuestion(businessName, addressQuestion)).toBe(false);
-    expect(sourceSupportsQuestion(industry, addressQuestion)).toBe(false);
-    expect(sourceSupportsQuestion(locations, addressQuestion)).toBe(true);
-    expect(sourceSupportsQuestion(hoursCandle, "What products do you offer?")).toBe(false);
-    expect(sourceSupportsQuestion(offerName, "What products do you offer?")).toBe(false);
-    expect(sourceSupportsQuestion(offerName, "Which product do you offer?")).toBe(false);
-    expect(sourceSupportsQuestion(hoursCandle, "What are your business hours?")).toBe(false);
-    expect(sourceSupportsQuestion(chickenPasta, "How much is Chicken Pasta?")).toBe(true);
-    expect(sourceSupportsQuestion(shortChickName, "How much is Chicken Pasta?")).toBe(false);
+  it("allows only source types compatible with the model-classified intent", () => {
+    const generalFaq: GroundingSource = {
+      ref: "faq:50", kind: "faq", id: 50, label: "General answer", text: "Ask the team for details.",
+      value: { question: "Do you offer more services?", relatedPhrases: "services", intent: "faq" },
+    };
+    expect(sourceSupportsIntent(locations, "location")).toBe(true);
+    expect(sourceSupportsIntent(businessName, "location")).toBe(false);
+    expect(sourceSupportsIntent(businessName, "business_information")).toBe(true);
+    expect(sourceSupportsIntent(chickenPasta, "price")).toBe(true);
+    expect(sourceSupportsIntent(chickenPasta, "delivery_fee")).toBe(false);
+    expect(sourceSupportsIntent(unpricedProduct, "price")).toBe(false);
+    expect(sourceSupportsIntent(unpricedProduct, "availability")).toBe(false);
+    expect(sourceSupportsIntent(faq, "availability")).toBe(false);
+    expect(sourceSupportsIntent(generalFaq, "opening_hours")).toBe(false);
+    expect(sourceSupportsIntent(generalFaq, "faq")).toBe(true);
+    expect(sourceSupportsIntent(hours, "not_a_supported_intent")).toBe(false);
   });
 
-  it("keeps same-numbered source records unambiguous by kind and profile field", () => {
-    const hours: GroundingSource = { ref: "profile:8:openingHours", kind: "profile", id: 8, field: "openingHours", label: "Opening hours", text: "Monday to Friday, 9am to 5pm" };
+  it("prefers the matching structured fact over a duplicate FAQ and accepts a semantic FAQ alone", () => {
+    expect(selectSourcesForIntent([hours, faq], "opening_hours")).toEqual([hours]);
+    expect(selectSourcesForIntent([faq], "opening_hours")).toEqual([faq]);
+    expect(selectSourcesForIntent([businessName, faq], "opening_hours")).toEqual([faq]);
+  });
+
+  it("keeps same-numbered source records unambiguous by kind and field", () => {
+    const hoursCandle: GroundingSource = {
+      ref: "product:8", kind: "product", id: 8, label: "Hours Candle", text: "{}",
+      value: { name: "Hours Candle", category: "Gift", description: "", price: "", variants: "", availability: "unknown" },
+    };
     expect(hours.ref).not.toBe(hoursCandle.ref);
-    expect(sourceSupportsQuestion(hours, "What are your hours?")).toBe(true);
+    expect(sourceSupportsIntent(hours, "opening_hours")).toBe(true);
+    expect(sourceSupportsIntent(hoursCandle, "opening_hours")).toBe(false);
   });
 
   it("uses exact fixed aliases for one safe missing detail only", () => {

@@ -13,6 +13,7 @@ import {
 import type { User } from "../drizzle/schema";
 import { getDb } from "./db";
 import { getCurrentWorkspace } from "./workspaces";
+import { faqIntentValues } from "../shared/receptionist-intents";
 
 export const brandSetupInput = z.object({
   name: z.string().trim().min(2).max(160),
@@ -56,8 +57,11 @@ export const faqInput = z.object({
   question: z.string().trim().min(3).max(500),
   answer: z.string().trim().min(2).max(4000),
   relatedPhrases: z.string().trim().max(1000),
+  intent: z.enum(faqIntentValues).default("faq"),
 });
 export type FaqInput = z.infer<typeof faqInput>;
+export const updateFaqIntentInput = z.object({ id: z.number().int().positive(), intent: z.enum(faqIntentValues) });
+export type UpdateFaqIntentInput = z.infer<typeof updateFaqIntentInput>;
 
 const slugify = (name: string) =>
   name.normalize("NFKD").replace(/[\u0300-\u036f]/g, "")
@@ -205,8 +209,19 @@ export async function addFaq(user: User, input: FaqInput) {
     question: input.question,
     answer: input.answer,
     relatedPhrases: input.relatedPhrases,
+    intent: input.intent,
     isApproved: true,
   });
+  return { success: true };
+}
+
+export async function updateFaqIntent(user: User, input: UpdateFaqIntentInput) {
+  const { db, workspace, brand } = await requiredBrand(user);
+  await db.update(brandFaqs).set({ intent: input.intent }).where(and(
+    eq(brandFaqs.id, input.id),
+    eq(brandFaqs.workspaceId, workspace.id),
+    eq(brandFaqs.brandId, brand.id),
+  ));
   return { success: true };
 }
 

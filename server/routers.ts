@@ -3,7 +3,7 @@ import { COOKIE_NAME } from "@shared/const";
 import { getSessionCookieOptions } from "./_core/cookies";
 import { systemRouter } from "./_core/systemRouter";
 import { protectedProcedure, publicProcedure, router } from "./_core/trpc";
-import { addCatalogueItem, addFaq, brandSetupInput, catalogueItemInput, faqInput, getOwnerSetup, removeCatalogueItem, removeFaq, saveBrandSetup } from "./brandSetup";
+import { addCatalogueItem, addFaq, brandSetupInput, catalogueItemInput, faqInput, getOwnerSetup, removeCatalogueItem, removeFaq, saveBrandSetup, updateFaqIntent, updateFaqIntentInput } from "./brandSetup";
 import { channelProvider, setSimulatedChannel } from "./channels";
 import { testReceptionist } from "./receptionist";
 import { getCurrentWorkspace } from "./workspaces";
@@ -33,6 +33,9 @@ export const appRouter = router({
     addFaq: protectedProcedure
       .input(faqInput)
       .mutation(({ ctx, input }) => addFaq(ctx.user, input)),
+    updateFaqIntent: protectedProcedure
+      .input(updateFaqIntentInput)
+      .mutation(({ ctx, input }) => updateFaqIntent(ctx.user, input)),
     removeFaq: protectedProcedure
       .input(z.object({ id: z.number().int().positive() }))
       .mutation(({ ctx, input }) => removeFaq(ctx.user, input.id)),

@@ -48,4 +48,32 @@ describe("owner-data-derived receptionist suggestions", () => {
     });
     expect(result).toContain("Where is your shop?");
   });
+
+  it("uses the saved FAQ topic instead of inferring a fact category from question words", () => {
+    const profile = { menuUrl: "", openingHours: "", deliveryAreas: "", paymentMethods: "", orderInstructions: "" };
+    const unrelatedHoursWording = messages({
+      profile,
+      catalogue: [],
+      faqs: [{ question: "Are you open for special events?", relatedPhrases: "opening times", intent: "policy" }],
+    });
+    expect(unrelatedHoursWording).not.toContain("What are your opening hours?");
+
+    const savedHours = messages({
+      profile,
+      catalogue: [],
+      faqs: [{ question: "When do you close?", relatedPhrases: "closing time", intent: "opening_hours" }],
+    });
+    expect(savedHours).toContain("What are your opening hours?");
+    expect(savedHours).toContain("When do you close?");
+  });
+
+  it("suggests a delivery-fee test only when an owner categorizes a fee FAQ", () => {
+    const profile = { menuUrl: "", openingHours: "", deliveryAreas: "", paymentMethods: "", orderInstructions: "" };
+    const result = messages({
+      profile,
+      catalogue: [{ name: "Chicken Pasta", price: "₦8,000", availability: "available" }],
+      faqs: [{ question: "How much is delivery?", relatedPhrases: "shipping cost", intent: "delivery_fee" }],
+    });
+    expect(result).toContain("What is the delivery fee?");
+  });
 });

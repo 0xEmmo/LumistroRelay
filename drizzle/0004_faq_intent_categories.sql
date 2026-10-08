@@ -1,0 +1,1 @@
+ALTER TABLE `brand_faqs` ADD `intent` enum('faq','opening_hours','menu','price','delivery_fee','delivery_area','delivery_time','order_instructions','booking_instructions','payment_methods','location','contact_details','policy','business_information','product_details') DEFAULT 'faq' NOT NULL;

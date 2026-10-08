@@ -9,6 +9,7 @@ import {
   uniqueIndex,
   varchar,
 } from "drizzle-orm/mysql-core";
+import { faqIntentValues } from "../shared/receptionist-intents";
 
 /** Core user table backing the Manus OAuth flow. */
 export const users = mysqlTable("users", {
@@ -138,6 +139,7 @@ export const brandFaqs = mysqlTable(
     question: varchar("question", { length: 500 }).notNull(),
     answer: text("answer").notNull(),
     relatedPhrases: text("relatedPhrases").notNull(),
+    intent: mysqlEnum("intent", faqIntentValues).default("faq").notNull(),
     isApproved: boolean("isApproved").default(true).notNull(),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
